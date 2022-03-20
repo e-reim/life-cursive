@@ -18,12 +18,12 @@ use cursive::{
     },
     Cursive, Printer,
 };
-use std::sync::RwLock;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::write;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 //use std::result::Result;
 
@@ -232,7 +232,7 @@ impl cursive::view::View for FieldView {
                         Key::F4 => {
                             gdata.edit_mode = true;
                             gdata.edit_x = gdata.start_x;
-                            gdata.edit_y = gdata.start_y;                            
+                            gdata.edit_y = gdata.start_y;
                         }
                         Key::F5 => {
                             gdata.do_search = true;
@@ -420,14 +420,16 @@ fn _exec_task(siv: &mut Cursive, num_reps: i32) {
     let f1 = Arc::clone(&f);
     siv.add_layer(Dialog::around(
         ProgressBar::new()
-            .range(0, num_reps as usize)
+            .range(0, num_reps as usize / 100)
             .with_task(move |counter| {
-                for _ in 0..num_reps {
+                for c in 0..num_reps {
                     {
                         let mut fg = f1.write().unwrap();
                         _update_step(&mut *fg);
                     }
-                    counter.tick(1);
+                    if c % 100 == 0 {
+                        counter.tick(1);
+                    }
                 }
                 cb.send(Box::new(move |s: &mut Cursive| {
                     s.pop_layer();
@@ -439,9 +441,9 @@ fn _exec_task(siv: &mut Cursive, num_reps: i32) {
                         for xy in (*fg).iter() {
                             gd.field.insert(*xy);
                         }
-
                     }
-                })).unwrap();
+                }))
+                .unwrap();
             })
             .full_width(),
     ));
@@ -644,7 +646,12 @@ pub fn run() {
         )
         .add_subtree(
             "Tools",
-            menu::Tree::new().leaf("Fast forward", |s| _run_multiple_steps(s)),
+            menu::Tree::new()
+                .leaf("Fast forward", |s| _run_multiple_steps(s))
+                .leaf("Clear", |s| {
+                    let mut gd = (*s.user_data::<Rc<RefCell<Gamedata>>>().unwrap()).borrow_mut();
+                    gd.field.clear();
+                }),
         )
         .add_delimiter()
         .add_leaf("Quit", |s| s.quit());
