@@ -1,2 +1,4 @@
 /target
 /.vscode
+/lf.db
+/src/lf.db
