@@ -13,15 +13,18 @@ use cursive::{
     view::CannotFocus,
     view::SizeConstraint,
     views::{
-        Canvas, Dialog, EditView, LinearLayout, OnLayoutView, ResizedView, SelectView, TextView,
-    },  
+        Canvas, Dialog, EditView, LinearLayout, OnLayoutView, ProgressBar, ResizedView, SelectView,
+        TextView,
+    },
     Cursive, Printer,
 };
-
+use std::sync::RwLock;
 use std::cell::RefCell;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::fmt::write;
 use std::rc::Rc;
+use std::sync::Arc;
+
 //use std::result::Result;
 
 use db::Result as Dbres;
@@ -38,6 +41,49 @@ fn _get_field_style(cursor: bool) -> ColorStyle {
     }
 }
 
+fn _update_step(f: &mut HashSet<(i32, i32)>) {
+    let mut nc: HashMap<(i32, i32), i32> = HashMap::new();
+    for (cx, cy) in f.iter() {
+        for dx in -1..2 {
+            for dy in -1..2 {
+                if dx != 0 || dy != 0 {
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    match nc.get_mut(&(nx, ny)) {
+                        Some(q) => {
+                            *q = *q + 1;
+                        }
+                        None => {
+                            nc.insert((nx, ny), 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let born: Vec<(i32, i32)> = nc
+        .keys()
+        .filter(|&c| nc[c] == 3 && !f.contains(c))
+        .cloned()
+        .collect();
+    let died: Vec<(i32, i32)> = f
+        .iter()
+        .filter(|&c| {
+            let n = match nc.get(c) {
+                Some(v) => *v,
+                None => 0,
+            };
+            (n < 2 || n > 3) && f.contains(c)
+        })
+        .cloned()
+        .collect();
+    for d in died {
+        f.remove(&d);
+    }
+    for b in born {
+        f.insert(b);
+    }
+}
+
 struct Gamedata {
     storage: Storage,
     field: HashSet<(i32, i32)>,
@@ -49,6 +95,7 @@ struct Gamedata {
     edit_mode: bool,
     do_center: bool,
     do_search: bool,
+    num_reps: i32,
 }
 
 impl Gamedata {
@@ -64,6 +111,7 @@ impl Gamedata {
             edit_mode: true,
             do_center: false,
             do_search: false,
+            num_reps: 1000,
         }
     }
 
@@ -89,46 +137,7 @@ impl Gamedata {
 
     pub fn update(&mut self) {
         self.search.clear();
-        let mut nc: HashMap<(i32, i32), i32> = HashMap::new();
-        for (cx, cy) in self.field.iter() {
-            for dx in -1..2 {
-                for dy in -1..2 {
-                    if dx != 0 || dy != 0 {
-                        let (nx, ny) = (cx + dx, cy + dy);
-                        match nc.get_mut(&(nx, ny)) {
-                            Some(q) => {
-                                *q = *q + 1;
-                            }
-                            None => {
-                                nc.insert((nx, ny), 1);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let born: Vec<(i32, i32)> = nc
-            .keys()
-            .filter(|&c| nc[c] == 3 && !self.field.contains(c))
-            .cloned()
-            .collect();
-        let died: Vec<(i32, i32)> = self.field
-            .iter()
-            .filter(|&c| {
-                let n = match nc.get(c) {
-                    Some(v) => *v,
-                    None => 0,
-                };
-                (n < 2 || n > 3) && self.field.contains(c)
-            })
-            .cloned()
-            .collect();
-        for d in died {
-            self.field.remove(&d);
-        }
-        for b in born {
-            self.field.insert(b);
-        }
+        _update_step(&mut self.field);
     }
 }
 
@@ -173,7 +182,7 @@ impl cursive::view::View for FieldView {
                         }
                         Key::F5 => {
                             gdata.do_search = true;
-                        },
+                        }
                         _ => (),
                     }
                 }
@@ -222,10 +231,12 @@ impl cursive::view::View for FieldView {
                         }
                         Key::F4 => {
                             gdata.edit_mode = true;
-                        },
+                            gdata.edit_x = gdata.start_x;
+                            gdata.edit_y = gdata.start_y;                            
+                        }
                         Key::F5 => {
                             gdata.do_search = true;
-                        },
+                        }
                         _ => (),
                     }
                 }
@@ -246,15 +257,13 @@ impl cursive::view::View for FieldView {
                             gdata.do_center = true;
                         }
                         MouseButton::Left => {
-                            gdata.toggle_cell(x, y);
+                            //gdata.toggle_cell(x, y);
                         }
                         _ => (),
                     };
                 }
                 _ => (),
             }
-            gdata.edit_x = gdata.start_x;
-            gdata.edit_y = gdata.start_y;
         }
         EventResult::Ignored
     }
@@ -269,9 +278,8 @@ impl cursive::view::View for FieldView {
 
         let x_f = ((x_max + 1) / 2) as i32;
 
-        let visible = |x: i32, y: i32, sx: i32, sy: i32| {
-            x >= sx && y >= sy && x < sx+x_f && y < sy+y_max
-        };
+        let visible =
+            |x: i32, y: i32, sx: i32, sy: i32| x >= sx && y >= sy && x < sx + x_f && y < sy + y_max;
 
         if gdata.do_search {
             if gdata.search.is_empty() {
@@ -283,10 +291,17 @@ impl cursive::view::View for FieldView {
                 gdata.edit_y = y;
                 gdata.start_x = gdata.edit_x - x_f / 2;
                 gdata.start_y = gdata.edit_y - y_max / 2;
-                    gdata.search = Box::new(gdata.search.iter().filter(|&p| {
-                    let (px, py) = *p;
-                    !visible(px, py, gdata.start_x, gdata.start_y)
-                }).cloned().collect::<Vec<(i32, i32)>>());
+                gdata.search = Box::new(
+                    gdata
+                        .search
+                        .iter()
+                        .filter(|&p| {
+                            let (px, py) = *p;
+                            !visible(px, py, gdata.start_x, gdata.start_y)
+                        })
+                        .cloned()
+                        .collect::<Vec<(i32, i32)>>(),
+                );
             }
         }
         gdata.do_search = false;
@@ -296,18 +311,19 @@ impl cursive::view::View for FieldView {
             gdata.start_y = gdata.edit_y - y_max / 2;
         }
         gdata.do_center = false;
-
-        if gdata.edit_x < gdata.start_x {
-            gdata.start_x = gdata.edit_x;
-        }
-        if gdata.edit_y < gdata.start_y {
-            gdata.start_y = gdata.edit_y;
-        }
-        if gdata.edit_x >= gdata.start_x + x_f {
-            gdata.start_x = gdata.edit_x - x_f + 1;
-        }
-        if gdata.edit_y >= gdata.start_y + y_max {
-            gdata.start_y = gdata.edit_y - y_max + 1;
+        if gdata.edit_mode {
+            if gdata.edit_x < gdata.start_x {
+                gdata.start_x = gdata.edit_x;
+            }
+            if gdata.edit_y < gdata.start_y {
+                gdata.start_y = gdata.edit_y;
+            }
+            if gdata.edit_x >= gdata.start_x + x_f {
+                gdata.start_x = gdata.edit_x - x_f + 1;
+            }
+            if gdata.edit_y >= gdata.start_y + y_max {
+                gdata.start_y = gdata.edit_y - y_max + 1;
+            }
         }
 
         for y in gdata.start_y..y_max + gdata.start_y {
@@ -363,8 +379,7 @@ fn _enter_dialog(siv: &mut Cursive) {
     siv.clear_global_callbacks(Key::F1);
 }
 
-const HELP_TEXT: &str =
-"ALL MODES:
+const HELP_TEXT: &str = "ALL MODES:
   <F1> displays this help
   <F4> toggles between the edit and playback modes
   <F5> to search for live cells (cycles through the visible parts)
@@ -381,11 +396,7 @@ PLAYBACK MODE:
 fn _help(siv: &mut Cursive) {
     let dlg = Dialog::new()
         .title("Help")
-        .content(
-            TextView::new(HELP_TEXT)
-                .min_width(60)
-                .min_height(20),
-        )
+        .content(TextView::new(HELP_TEXT).min_width(60).min_height(20))
         .button("Ok", |s| {
             _leave_dialog(s);
             s.pop_layer();
@@ -395,6 +406,72 @@ fn _help(siv: &mut Cursive) {
         _leave_dialog(s);
         s.pop_layer();
     });
+    siv.add_layer(dlg);
+}
+
+fn _exec_task(siv: &mut Cursive, num_reps: i32) {
+    let f: Arc<RwLock<HashSet<(i32, i32)>>>;
+    {
+        let mut gd = (*siv.user_data::<Rc<RefCell<Gamedata>>>().unwrap()).borrow_mut();
+        gd.num_reps = num_reps;
+        f = Arc::new(RwLock::new(gd.field.clone()));
+    }
+    let cb = siv.cb_sink().clone();
+    let f1 = Arc::clone(&f);
+    siv.add_layer(Dialog::around(
+        ProgressBar::new()
+            .range(0, num_reps as usize)
+            .with_task(move |counter| {
+                for _ in 0..num_reps {
+                    {
+                        let mut fg = f1.write().unwrap();
+                        _update_step(&mut *fg);
+                    }
+                    counter.tick(1);
+                }
+                cb.send(Box::new(move |s: &mut Cursive| {
+                    s.pop_layer();
+                    _leave_dialog(s);
+                    let mut gd = (*s.user_data::<Rc<RefCell<Gamedata>>>().unwrap()).borrow_mut();
+                    gd.field.clear();
+                    {
+                        let fg = f.read().unwrap();
+                        for xy in (*fg).iter() {
+                            gd.field.insert(*xy);
+                        }
+
+                    }
+                })).unwrap();
+            })
+            .full_width(),
+    ));
+    siv.set_autorefresh(true);
+}
+
+fn _run_multiple_steps(siv: &mut Cursive) {
+    _enter_dialog(siv);
+    let num_reps: i32;
+    {
+        num_reps = (*siv.user_data::<Rc<RefCell<Gamedata>>>().unwrap())
+            .borrow_mut()
+            .num_reps;
+    }
+    let mut editview =
+        EditView::new().on_submit(|s: &mut Cursive, v: &str| match v.parse::<i32>() {
+            Ok(i) => {
+                s.pop_layer();
+                _exec_task(s, i);
+            }
+            _ => {}
+        });
+    editview.set_content(num_reps.to_string());
+    let dlg = Dialog::new()
+        .title("Number of repetitions?")
+        .content(editview)
+        .button("Cancel", |s| {
+            _leave_dialog(s);
+            s.pop_layer();
+        });
     siv.add_layer(dlg);
 }
 
@@ -526,7 +603,15 @@ fn _draw_status(gd: &Rc<RefCell<Gamedata>>, p: &Printer) {
         &mut s,
         format_args!(
             "{}; <F1>: help, <F4>: edit/play, <ESC>: menu; S=({},{}); E=({},{})",
-            if gdata.edit_mode {"<= EDIT =>"} else {"<= PLAY =>"}, gdata.start_x, gdata.start_y, gdata.edit_x, gdata.edit_y
+            if gdata.edit_mode {
+                "<= EDIT =>"
+            } else {
+                "<= PLAY =>"
+            },
+            gdata.start_x,
+            gdata.start_y,
+            gdata.edit_x,
+            gdata.edit_y
         ),
     )
     .unwrap();
@@ -556,6 +641,10 @@ pub fn run() {
                 .leaf("Delete", |s| {
                     _delete(s);
                 }),
+        )
+        .add_subtree(
+            "Tools",
+            menu::Tree::new().leaf("Fast forward", |s| _run_multiple_steps(s)),
         )
         .add_delimiter()
         .add_leaf("Quit", |s| s.quit());
